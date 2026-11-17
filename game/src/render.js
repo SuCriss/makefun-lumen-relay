@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // Canvas renderer for Lumen Relay. One job: turn world state into a readable neon frame.
 import { W, H, PALETTE, SCREEN } from './config.js';
 

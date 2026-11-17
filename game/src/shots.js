@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // Deterministic screenshot scenes: ?shot=start|play|end.
 // Each returns a fully simulated world, so the screenshot is the real game renderer.
 import { stageShot } from './world.js';

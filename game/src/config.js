@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // Tunable geometry and rules for Lumen Relay.
 export const W = 1280;
 export const H = 720;

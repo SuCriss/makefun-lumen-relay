@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // Small WebAudio synth: all sound is generated, with no external assets.
 let ctx = null;
 export function tone(freq, duration=0.08, type='sine', gain=0.035) {

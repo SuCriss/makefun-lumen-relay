@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // The beam simulation: three rays, rotatable mirrors, receivers, score and lives.
 import { W, H, LEVELS, SCREEN, clamp, dist } from './config.js';
 import { blip, chime, fail } from './audio.js';

@@ -1,3 +1,4 @@
+// big-pickle authored version.
 // Keyboard and mouse input, plus deterministic shot-mode overrides.
 export function makeInput(canvas) {
   const keys = new Set();
