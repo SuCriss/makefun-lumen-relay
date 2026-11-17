@@ -1,3 +1,4 @@
+// big-pickle build pass 2: deterministic scenes
 // Lumen Relay bootstrap: one canvas, keyboard/mouse controls, fixed-step simulation.
 import { W, H } from './config.js';
 import { makeInput } from './input.js';
