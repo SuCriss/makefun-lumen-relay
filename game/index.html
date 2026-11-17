@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen Relay</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#070b18;color:#d9f7ff;font-family:system-ui,sans-serif}
+  #game{display:block;width:100vw;height:100vh;touch-action:none;cursor:crosshair}
+  #hint{position:fixed;right:16px;bottom:12px;font-size:13px;color:#6c8daa;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Lumen Relay: rotate mirrors to guide three colored beams into matching receivers"></canvas>
+<div id="hint">MOUSE / A D / 1 2 3 · SPACE · R</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
