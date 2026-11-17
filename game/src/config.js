@@ -1,15 +1,61 @@
-// big-pickle authored version.
-// Tunable geometry and rules for Lumen Relay.
+// Shared constants and helpers for the game.
+
 export const W = 1280;
 export const H = 720;
-export const PALETTE = ['#ff4d8d', '#4de1ff', '#ffe45e'];
-export const SCREEN = { TITLE: 0, PLAY: 1, RESULT: 2 };
+
+export const PALETTE = {
+  bg: "#0b0f1a",
+  fg: "#e8f0ff",
+  accent: "#4fd1ff",
+  warn: "#ffb347",
+  danger: "#ff5470",
+  success: "#5ef2a4",
+  muted: "#6b7a99",
+  grid: "#1a2438",
+  shadow: "#000000",
+};
+
+export const SCREEN = {
+  title: "title",
+  playing: "playing",
+  paused: "paused",
+  gameover: "gameover",
+  win: "win",
+};
+
 export const LEVELS = [
-  { name: 'FIRST LIGHT', mirrors: 3, time: 42, speed: 1.0 },
-  { name: 'PRISM ARRAY', mirrors: 4, time: 39, speed: 1.15 },
-  { name: 'SPECTRUM SPLIT', mirrors: 5, time: 36, speed: 1.3 },
-  { name: 'RESONANCE', mirrors: 6, time: 34, speed: 1.48 },
-  { name: 'FINAL RELAY', mirrors: 7, time: 32, speed: 1.68 },
+  {
+    id: 1,
+    name: "First Light",
+    size: { w: W, h: H },
+    speed: 1,
+    relayCount: 2,
+    duration: 60,
+  },
+  {
+    id: 2,
+    name: "Signal Drift",
+    size: { w: W, h: H },
+    speed: 1.25,
+    relayCount: 3,
+    duration: 75,
+  },
+  {
+    id: 3,
+    name: "Lumen Core",
+    size: { w: W, h: H },
+    speed: 1.5,
+    relayCount: 4,
+    duration: 90,
+  },
 ];
-export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-export const dist = (a, b, c, d) => Math.hypot(a-c, b-d);
+
+export function clamp(v, min, max) {
+  return v < min ? min : v > max ? max : v;
+}
+
+export function dist(ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  return Math.sqrt(dx * dx + dy * dy);
+}

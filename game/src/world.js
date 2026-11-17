@@ -1,102 +1,414 @@
-// big-pickle authored version.
-// The beam simulation: three rays, rotatable mirrors, receivers, score and lives.
-import { W, H, LEVELS, SCREEN, clamp, dist } from './config.js';
-import { blip, chime, fail } from './audio.js';
+// Game world: beams, mirrors, receivers, scoring and deterministic screenshot scenes.
 
-function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
-function mirror(x, y, a) { return { x, y, a, hit: 0 }; }
-function segmentHit(ray, m) {
-  const dx = Math.cos(m.a), dy = Math.sin(m.a), half = 42;
-  const rx = ray.x, ry = ray.y, vx = Math.cos(ray.a), vy = Math.sin(ray.a);
-  const den = vx * dy - vy * dx;
-  if (Math.abs(den) < 1e-6) return null;
-  const qx = m.x - rx, qy = m.y - ry;
-  const t = (qx * dy - qy * dx) / den;
-  const u = (qx * vy - qy * vx) / den;
-  if (t > 1 && t < 260 && Math.abs(u) <= half) return { t, x: rx + vx*t, y: ry + vy*t };
+import { W, H, PALETTE, SCREEN, LEVELS, clamp } from "./config.js";
+import { tone, blip, chime, fail } from "./audio.js";
+
+const COLORS = [PALETTE.accent, PALETTE.success, PALETTE.warn];
+const DIRS = [-0.26, 0, 0.26];
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function raySegment(px, py, dx, dy, ax, ay, bx, by) {
+  const ex = bx - ax;
+  const ey = by - ay;
+  const den = ex * dy - dx * ey;
+  if (Math.abs(den) < 1e-9) return null;
+  const rx = ax - px;
+  const ry = ay - py;
+  const t = (ex * ry - rx * ey) / den;
+  const u = (dx * ry - rx * dy) / den;
+  if (t > 0.001 && u >= 0 && u <= 1) return { t, u };
   return null;
 }
-export function createWorld(seed=1) {
-  const world = { screen: SCREEN.TITLE, level: 0, score: 0, best: 0, combo: 0, energy: 100, time: LEVELS[0].time, seed, mirrors: [], rays: [], particles: [], status: 'READY', flash: 0, won: false, elapsed: 0 };
-  layout(world); return world;
+
+function rayCircle(px, py, dx, dy, cx, cy, r) {
+  const ox = px - cx;
+  const oy = py - cy;
+  const b = ox * dx + oy * dy;
+  const c = ox * ox + oy * oy - r * r;
+  const disc = b * b - c;
+  if (disc < 0) return -1;
+  const s = Math.sqrt(disc);
+  let t = -b - s;
+  if (t <= 0.001) t = -b + s;
+  return t > 0.001 ? t : -1;
 }
-function layout(w) {
-  const level = LEVELS[Math.min(w.level, LEVELS.length-1)], r = rng(w.seed * 977 + w.level * 7919);
-  w.mirrors = [];
-  for (let i = 0; i < level.mirrors; i++) w.mirrors.push(mirror(250 + (i%4)*245 + r()*45, 170 + Math.floor(i/4)*245 + r()*45, (r()-.5)*1.6));
-  w.time = level.time; w.status = 'ALIGN THE RELAY'; w.flash = 0;
-  w.rays = [0,1,2].map(i => ({ x: 72, y: 270 + i*92, a: -0.06 + i*0.05, color: i, alive: true, trail: [] }));
-  w.receivers = [0,1,2].map(i => ({ x: 1160, y: 270 + i*92, color: i, charge: 0 }));
+
+function mirrorSegment(m) {
+  const a = (m.quarters * Math.PI) / 4;
+  const hx = (Math.cos(a) * m.len) / 2;
+  const hy = (Math.sin(a) * m.len) / 2;
+  return { ax: m.x - hx, ay: m.y - hy, bx: m.x + hx, by: m.y + hy };
 }
-export function reset(w, keepBest=true) {
-  const best = keepBest ? w.best : 0;
-  Object.assign(w, createWorld(w.seed));
-  w.best = best;
-}
-export function start(w) { if (w.screen === SCREEN.TITLE || w.screen === SCREEN.RESULT) { reset(w); w.screen = SCREEN.PLAY; blip(); } }
-export function rotate(w, dir) {
-  if (w.screen !== SCREEN.PLAY) return;
-  let nearest = 0, best = 1e9;
-  for (let i=0;i<w.mirrors.length;i++) { const d=dist(w.pointer?.x ?? 640,w.pointer?.y ?? 360,w.mirrors[i].x,w.mirrors[i].y); if(d<best){best=d;nearest=i;} }
-  w.mirrors[nearest].a += dir * 0.13; w.mirrors[nearest].hit = 1; blip();
-}
-export function tick(w, dt, input) {
-  w.elapsed += dt;
-  if (w.flash > 0) w.flash -= dt;
-  for (const p of w.particles) { p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt; }
-  w.particles = w.particles.filter(p => p.life > 0);
-  if (w.screen !== SCREEN.PLAY) return;
-  w.time -= dt * Math.min(LEVELS[w.level].speed, 2);
-  if (w.time <= 0) { end(w, false); return; }
-  let solved = 0;
-  for (const ray of w.rays) {
-    ray.trail = [{x:ray.x,y:ray.y}];
-    let x=ray.x, y=ray.y, a=ray.a, bounced=0;
-    for (let bounce=0;bounce<8;bounce++) {
-      let hit=null, owner=-1;
-      w.mirrors.forEach((m,i)=>{ const h=segmentHit({x,y,a},m); if(h && (!hit || h.t<hit.t)){hit=h;owner=i;} });
-      const wallT = (W-90-x)/Math.cos(a);
-      if (hit && hit.t < wallT) {
-        x=hit.x; y=hit.y; ray.trail.push({x,y}); bounced++;
-        const m=w.mirrors[owner]; a = 2*m.a - a + Math.PI; m.hit=Math.max(0,m.hit-dt*3);
-      } else { x += Math.cos(a)*700; y += Math.sin(a)*700; ray.trail.push({x,y}); break; }
+
+const LAYOUTS = [
+  {
+    emitter: { x: 100, y: H * 0.5 },
+    receivers: [
+      { x: W - 140, y: H * 0.24 },
+      { x: W - 140, y: H * 0.5 },
+      { x: W - 140, y: H * 0.76 },
+    ],
+    mirrors: [
+      { x: 320, y: H * 0.3, q: 1 },
+      { x: 320, y: H * 0.7, q: 3 },
+      { x: 600, y: H * 0.5, q: 0 },
+      { x: 860, y: H * 0.24, q: 2 },
+      { x: 860, y: H * 0.76, q: 1 },
+    ],
+  },
+  {
+    emitter: { x: 90, y: H * 0.5 },
+    receivers: [
+      { x: W - 140, y: H * 0.2 },
+      { x: W - 140, y: H * 0.5 },
+      { x: W - 140, y: H * 0.8 },
+    ],
+    mirrors: [
+      { x: 300, y: H * 0.35, q: 1 },
+      { x: 300, y: H * 0.65, q: 3 },
+      { x: 560, y: H * 0.2, q: 0 },
+      { x: 560, y: H * 0.8, q: 2 },
+      { x: 780, y: H * 0.5, q: 1 },
+      { x: 980, y: H * 0.3, q: 3 },
+      { x: 980, y: H * 0.7, q: 1 },
+    ],
+  },
+  {
+    emitter: { x: 80, y: H * 0.5 },
+    receivers: [
+      { x: W - 140, y: H * 0.18 },
+      { x: W - 140, y: H * 0.5 },
+      { x: W - 140, y: H * 0.82 },
+    ],
+    mirrors: [
+      { x: 280, y: H * 0.4, q: 1 },
+      { x: 280, y: H * 0.6, q: 3 },
+      { x: 500, y: H * 0.22, q: 0 },
+      { x: 500, y: H * 0.78, q: 2 },
+      { x: 720, y: H * 0.5, q: 1 },
+      { x: 920, y: H * 0.3, q: 3 },
+      { x: 920, y: H * 0.7, q: 1 },
+      { x: 1080, y: H * 0.5, q: 0 },
+    ],
+  },
+];
+
+function computeBeams(world) {
+  world.beams = [];
+  for (const r of world.receivers) r.active = false;
+
+  for (let i = 0; i < 3; i++) {
+    const color = COLORS[i];
+    let px = world.emitter.x;
+    let py = world.emitter.y;
+    const angle = DIRS[i];
+    let dx = Math.cos(angle);
+    let dy = Math.sin(angle);
+    const points = [{ x: px, y: py }];
+    let hit = false;
+
+    for (let bounce = 0; bounce < 8; bounce++) {
+      let bestT = Infinity;
+      let bestM = null;
+      for (const m of world.mirrors) {
+        const s = mirrorSegment(m);
+        const h = raySegment(px, py, dx, dy, s.ax, s.ay, s.bx, s.by);
+        if (h && h.t < bestT) {
+          bestT = h.t;
+          bestM = m;
+        }
+      }
+
+      let recT = Infinity;
+      let rec = null;
+      for (const r of world.receivers) {
+        if (r.color !== color) continue;
+        const t = rayCircle(px, py, dx, dy, r.x, r.y, r.radius);
+        if (t > 0 && t < recT) {
+          recT = t;
+          rec = r;
+        }
+      }
+
+      if (rec && recT < bestT) {
+        points.push({ x: px + dx * recT, y: py + dy * recT });
+        rec.active = true;
+        hit = true;
+        break;
+      }
+
+      if (bestM && bestT < Infinity) {
+        const hx = px + dx * bestT;
+        const hy = py + dy * bestT;
+        points.push({ x: hx, y: hy });
+        const s = mirrorSegment(bestM);
+        const ex = s.bx - s.ax;
+        const ey = s.by - s.ay;
+        const len = Math.hypot(ex, ey) || 1;
+        const nx = -ey / len;
+        const ny = ex / len;
+        const dot = dx * nx + dy * ny;
+        dx -= 2 * dot * nx;
+        dy -= 2 * dot * ny;
+        const dl = Math.hypot(dx, dy) || 1;
+        dx /= dl;
+        dy /= dl;
+        px = hx + dx * 0.01;
+        py = hy + dy * 0.01;
+        continue;
+      }
+
+      points.push({ x: px + dx * 1600, y: py + dy * 1600 });
+      break;
     }
-    ray.path = ray.trail; ray.bounces = bounced;
-    const target = w.receivers[ray.color];
-    const last = ray.trail[ray.trail.length-1];
-    const good = Math.abs(last.x-1160)<130 && Math.abs(last.y-target.y)<38;
-    if (good) { target.charge=Math.min(1,target.charge+dt*1.7); for(let i=0;i<2;i++) w.particles.push({x:1160,y:target.y,vx:-40-Math.random()*50,vy:(Math.random()-.5)*70,life:.4,c:ray.color}); }
-    else target.charge=Math.max(0,target.charge-dt*.8);
-    if (target.charge>=1) solved++;
+
+    world.beams.push({ color, points, hit });
   }
-  if (solved===3) {
-    const bonus = Math.round(w.time*10) + w.combo*25;
-    w.score += 500 + bonus; w.combo++; chime(w.level%3); w.flash=.5;
-    w.level++;
-    if (w.level>=LEVELS.length) end(w,true); else layout(w);
+  return world;
+}
+
+function spawnParticles(world, x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const a = world.rng() * Math.PI * 2;
+    const s = 40 + world.rng() * 160;
+    const life = 0.5 + world.rng() * 0.6;
+    world.particles.push({
+      x,
+      y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life,
+      max: life,
+      color,
+      size: 2 + world.rng() * 3,
+    });
   }
-  const c=input?.consume?.();
-  if (c?.start || c?.restart) start(w);
-  if (c?.pressed) rotate(w, typeof c.pressed==='number' ? c.pressed : (input.state.pointer.x<640?-1:1));
-  if (input?.keys?.has('a') || input?.keys?.has('arrowleft')) rotate(w,-.12*dt*8);
-  if (input?.keys?.has('d') || input?.keys?.has('arrowright')) rotate(w,.12*dt*8);
 }
-function end(w, won) {
-  w.won=won; w.screen=SCREEN.RESULT; w.best=Math.max(w.best,w.score); w.status=won?'ALL CIRCUITS ONLINE':'ENERGY DEPLETED';
-  won?chime(2):fail();
+
+function updateParticles(world, dt) {
+  const next = [];
+  for (const p of world.particles) {
+    p.life -= dt;
+    if (p.life <= 0) continue;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 140 * dt;
+    p.vx *= 0.98;
+    next.push(p);
+  }
+  world.particles = next;
 }
-export function stageShot(name, seed=1) {
-  const w=createWorld(seed);
-  if(name==='start'){ w.screen=SCREEN.TITLE; return w; }
-  w.screen=SCREEN.PLAY;
-  if(name==='play'){
-    w.level=2; layout(w); w.score=1840; w.combo=3; w.time=27.4; w.elapsed=14.6;
-    w.receivers.forEach((r,i)=>{r.charge=[.92,.55,.18][i];});
-    w.mirrors.forEach((m,i)=>{m.a=[-.45,.28,.62,-.22,.35][i%5];m.hit=.3;});
+
+function loadLevel(world, index) {
+  const layout = LAYOUTS[index % LAYOUTS.length];
+  const def = LEVELS[index];
+  world.level = index;
+  world.emitter = { x: layout.emitter.x, y: layout.emitter.y };
+  world.receivers = layout.receivers.map((r, i) => ({
+    x: r.x,
+    y: r.y,
+    radius: 28,
+    color: COLORS[i],
+    active: false,
+    wasActive: false,
+  }));
+  world.mirrors = layout.mirrors.map((m) => ({
+    x: m.x,
+    y: m.y,
+    len: 76,
+    quarters: (m.q || 0) % 4,
+  }));
+  world.timer = def ? def.duration : 60;
+  world.activeCount = 0;
+  world.beams = [];
+  computeBeams(world);
+  for (const r of world.receivers) r.wasActive = r.active;
+  return world;
+}
+
+function completeLevel(world) {
+  world.score += 120 + Math.round(world.timer * 5);
+  chime(720, 0.16);
+  for (const r of world.receivers) spawnParticles(world, r.x, r.y, r.color, 12);
+
+  if (world.level + 1 >= LEVELS.length) {
+    world.screen = SCREEN.result;
+    world.message = "All relays lit";
+    world.timer = 0;
   } else {
-    w.level=4; layout(w); w.score=3460; w.combo=4; w.time=0; w.won=true; w.screen=SCREEN.RESULT;
-    w.best=3460; w.status='ALL CIRCUITS ONLINE'; w.receivers.forEach(r=>r.charge=1);
+    loadLevel(world, world.level + 1);
+    world.screen = SCREEN.playing;
+    world.combo = clamp(world.combo, 0, 99);
+    world.message = `Level ${world.level + 1}`;
   }
-  tick(w,0,{consume:()=>({})});
-  return w;
+  return world;
+}
+
+function evaluate(world) {
+  let active = 0;
+  let lost = 0;
+  const newly = [];
+
+  for (const r of world.receivers) {
+    if (r.active) {
+      active++;
+      if (!r.wasActive) newly.push(r);
+    } else if (r.wasActive) {
+      lost++;
+    }
+    r.wasActive = r.active;
+  }
+
+  if (newly.length > 0) {
+    world.combo = clamp(world.combo + newly.length, 0, 99);
+    world.score += 25 * newly.length * Math.max(1, world.combo);
+    for (const r of newly) {
+      spawnParticles(world, r.x, r.y, r.color, 14);
+      blip(700 + world.combo * 30, 0.05, 0.12);
+    }
+  } else if (lost > 0) {
+    world.combo = 0;
+  }
+
+  world.activeCount = active;
+  if (active >= 3) completeLevel(world);
+  return world;
+}
+
+export function createWorld(options = {}) {
+  const world = {
+    screen: SCREEN.title,
+    time: 0,
+    level: 0,
+    score: 0,
+    combo: 0,
+    timer: 0,
+    beams: [],
+    receivers: [],
+    mirrors: [],
+    particles: [],
+    emitter: { x: 0, y: 0 },
+    activeCount: 0,
+    selectedMirror: 0,
+    message: "",
+    lastShot: null,
+    rng: mulberry32(options.seed ?? 1337),
+  };
+  return reset(world);
+}
+
+export function reset(world) {
+  world.screen = SCREEN.title;
+  world.level = 0;
+  world.score = 0;
+  world.combo = 0;
+  world.time = 0;
+  world.particles = [];
+  world.message = "";
+  world.selectedMirror = 0;
+  loadLevel(world, 0);
+  world.screen = SCREEN.title;
+  return world;
+}
+
+export function start(world) {
+  if (world.screen === SCREEN.result) {
+    world.level = 0;
+    world.score = 0;
+    world.combo = 0;
+    loadLevel(world, 0);
+  }
+  world.screen = SCREEN.playing;
+  world.timer = LEVELS[world.level] ? LEVELS[world.level].duration : 60;
+  world.message = "";
+  tone(660, 0.1, "sine", 0.14);
+  return world;
+}
+
+export function rotate(world, index) {
+  if (world.screen !== SCREEN.playing) return world;
+  const i = Number.isInteger(index) ? index : world.selectedMirror || 0;
+  const m = world.mirrors[i];
+  if (!m) return world;
+  m.quarters = (m.quarters + 1) % 4;
+  world.selectedMirror = i;
+  blip(480 + i * 70, 0.05, 0.14);
+  computeBeams(world);
+  evaluate(world);
+  return world;
+}
+
+export function tick(world, dt) {
+  world.time += dt;
+  if (world.screen === SCREEN.playing) {
+    world.timer = Math.max(0, world.timer - dt);
+    if (world.timer <= 0) {
+      world.screen = SCREEN.result;
+      world.message = "Out of time";
+      fail();
+    }
+  }
+  updateParticles(world, dt);
+  return world;
+}
+
+export function stageShot(world, name) {
+  world.rng = mulberry32(0xc0ffee);
+  world.particles = [];
+  world.time = 0;
+
+  if (name === "start") {
+    world.level = 0;
+    world.score = 0;
+    world.combo = 0;
+    world.activeCount = 0;
+    loadLevel(world, 0);
+    world.screen = SCREEN.title;
+    world.message = "";
+    world.timer = LEVELS[0].duration;
+    spawnParticles(world, world.emitter.x, world.emitter.y, PALETTE.accent, 10);
+  } else if (name === "play") {
+    world.level = 0;
+    loadLevel(world, 0);
+    const quarters = [1, 3, 0, 2, 1];
+    world.mirrors.forEach((m, i) => {
+      m.quarters = quarters[i % quarters.length];
+    });
+    computeBeams(world);
+    for (const r of world.receivers) r.wasActive = r.active;
+    world.screen = SCREEN.playing;
+    world.timer = LEVELS[0].duration * 0.62;
+    world.score = 420;
+    world.combo = 2;
+    world.activeCount = world.receivers.filter((r) => r.active).length;
+    const target = world.receivers[0];
+    spawnParticles(world, target.x, target.y, target.color, 18);
+    spawnParticles(world, W * 0.5, H * 0.4, PALETTE.accent, 10);
+  } else if (name === "end") {
+    world.level = LEVELS.length - 1;
+    loadLevel(world, world.level);
+    world.screen = SCREEN.result;
+    world.timer = 0;
+    world.score = 1980;
+    world.combo = 3;
+    world.message = "All relays lit";
+    for (const r of world.receivers) {
+      spawnParticles(world, r.x, r.y, r.color, 16);
+    }
+    spawnParticles(world, W * 0.5, H * 0.5, PALETTE.success, 24);
+  } else {
+    reset(world);
+  }
+
+  world.lastShot = name;
+  return world;
 }
